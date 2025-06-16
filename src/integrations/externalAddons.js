@@ -83,8 +83,16 @@ class ExternalAddon {
         let processedExtraSupported = [];
         const originalExtra = catalog.extraSupported || catalog.extra || [];
         originalExtra.forEach(extraItem => {
-            if (extraItem.name === "genre") {
+            if (typeof extraItem === 'string' && extraItem === "genre") {
+                // Handle simple string format - convert to object without options
                 processedExtraSupported.push({ name: "genre" });
+            } else if (typeof extraItem === 'object' && extraItem.name === "genre") {
+                // Preserve the full genre extra with options from manifest.json
+                processedExtraSupported.push({
+                    name: "genre",
+                    options: extraItem.options || [], // Keep native genre options
+                    isRequired: extraItem.isRequired || false
+                });
             } else {
                 processedExtraSupported.push(extraItem);
             }
@@ -205,13 +213,18 @@ async function fetchExternalAddonItems(targetOriginalId, targetOriginalType, sou
       }
     }
     
-    // Skip genre filtering at external addon level when using TMDB metadata source
-    // This allows TMDB-enriched genre filtering to work properly after enrichment
-    const shouldSkipExternalGenreFilter = userConfig?.metadataSource === 'tmdb' && genre && genre !== 'All';
-    const genreForExternalAddon = shouldSkipExternalGenreFilter ? null : genre;
+    // Use native external addon genre filtering when available
+    // Only skip if the external addon doesn't support genre filtering natively
+    const catalogSupportsGenres = catalogEntry?.extraSupported?.some(e => 
+      (typeof e === 'object' && e.name === 'genre') || e === 'genre'
+    );
     
-    if (shouldSkipExternalGenreFilter) {
-      console.log(`[ExternalAddon] Skipping external addon genre filter for "${genre}" - will filter after TMDB enrichment`);
+    const genreForExternalAddon = (catalogSupportsGenres && genre && genre !== 'All') ? genre : null;
+    
+    if (catalogSupportsGenres && genre && genre !== 'All') {
+      console.log(`[ExternalAddon] Using native genre filtering for "${genre}" on ${sourceAddonConfig.name}`);
+    } else if (genre && genre !== 'All') {
+      console.log(`[ExternalAddon] External addon does not support native genre filtering - will filter after enrichment`);
     }
     
     const tempExternalAddon = new ExternalAddon(sourceAddonConfig.apiBaseUrl); 
@@ -237,8 +250,9 @@ async function fetchExternalAddonItems(targetOriginalId, targetOriginalType, sou
     // No metadata enrichment here - this will be done in the addon builder when serving to Stremio
     let enrichedMetas = metasFromExternal;
     let finalMetas = enrichedMetas;
-    // Note: Genre filtering is now handled after metadata enrichment in the addon builder
-    // This ensures TMDB-enriched genres are properly used for filtering
+    // Note: Genre filtering is handled at different levels:
+    // 1. Native addon filtering (when supported) - handled above via genreForExternalAddon
+    // 2. Post-enrichment filtering (for addons without native support) - handled in addon builder
     const hasMovies = finalMetas.some(m => m.type === 'movie');
     const hasShows = finalMetas.some(m => m.type === 'series');
     return { metas: finalMetas, hasMovies, hasShows };

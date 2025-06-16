@@ -278,7 +278,13 @@ async function fetchTraktLists(userConfig) {
             return null; 
         }
         requestUrl = `${TRAKT_API_URL}/recommendations/${effectiveItemTypeForEndpoint === 'series' ? 'shows' : 'movies'}`;
-        if (genre && !isMetadataCheck) params.genres = genre.toLowerCase().replace(/\s+/g, '-');
+        // Apply genre filtering using proper Trakt genre slugs
+        if (genre && genre !== 'All' && !isMetadataCheck) {
+          const genreSlug = getTraktGenreSlug(genre, effectiveItemTypeForEndpoint === 'series' ? 'shows' : 'movies');
+          if (genreSlug) {
+            params.genres = genreSlug;
+          }
+        }
     } else if (listId.startsWith('trakt_trending_') || listId.startsWith('trakt_popular_')) {
         effectiveItemTypeForEndpoint = listId.includes('_movies') ? 'movie' : (listId.includes('_shows') ? 'series' : null);
         if (!effectiveItemTypeForEndpoint) { 
@@ -290,7 +296,13 @@ async function fetchTraktLists(userConfig) {
           delete headers.Authorization;
         }
         requestUrl = `${TRAKT_API_URL}/${effectiveItemTypeForEndpoint === 'series' ? 'shows' : 'movies'}/${endpointType}`;
-        if (genre && !isMetadataCheck) params.genres = genre.toLowerCase().replace(/\s+/g, '-');
+        // Apply genre filtering using proper Trakt genre slugs
+        if (genre && genre !== 'All' && !isMetadataCheck) {
+          const genreSlug = getTraktGenreSlug(genre, effectiveItemTypeForEndpoint === 'series' ? 'shows' : 'movies');
+          if (genreSlug) {
+            params.genres = genreSlug;
+          }
+        }
   
     } else if (listId.startsWith('trakt_')) { 
         const listSlug = listId.replace('trakt_', '');
@@ -300,6 +312,17 @@ async function fetchTraktLists(userConfig) {
         else { requestUrl = basePath; effectiveItemTypeForEndpoint = null; } 
         if (sortBy && !isMetadataCheck) params.sort_by = sortBy; 
         if (sortOrder && !isMetadataCheck) params.sort_how = sortOrder;
+        
+        // Apply genre filtering for user lists using proper Trakt genre slugs
+        if (genre && genre !== 'All' && !isMetadataCheck) {
+          // Determine content type for genre slug lookup
+          const contentType = effectiveItemTypeForEndpoint === 'series' ? 'shows' : 
+                             effectiveItemTypeForEndpoint === 'movie' ? 'movies' : 'movies'; // Default to movies
+          const genreSlug = getTraktGenreSlug(genre, contentType);
+          if (genreSlug) {
+            params.genres = genreSlug;
+          }
+        }
     } else {
       console.warn(`[TraktIntegration] Unknown Trakt list ID format or type: ${listId}`);
       return null;
@@ -544,32 +567,76 @@ async function batchFetchTraktMetadata(items) {
   return results;
 }
   
-  /**
- * Fetch available genres from Trakt API
+// Trakt genre cache to avoid repeated API calls
+let traktGenreCache = {
+  movies: null,
+  shows: null,
+  combined: null,
+  movieSlugs: null,
+  showSlugs: null,
+  lastFetched: null
+};
+
+const TRAKT_GENRE_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
+
+/**
+ * Fetch available genres from Trakt API with caching and slug support
+ * @param {string} type - 'movies', 'shows', or 'combined'
  * @returns {Array} Array of genre names
  */
-async function fetchTraktGenres() {
+async function fetchTraktGenres(type = 'combined') {
   try {
+    const now = Date.now();
+    
+    // Check if we have valid cached data
+    if (traktGenreCache.lastFetched && 
+        (now - traktGenreCache.lastFetched) < TRAKT_GENRE_CACHE_TTL &&
+        traktGenreCache[type]) {
+      return traktGenreCache[type];
+    }
+
+    console.log('[Trakt] Fetching genre data from API...');
+    
     const headers = {
       'Content-Type': 'application/json',
       'trakt-api-version': '2',
       'trakt-api-key': TRAKT_CLIENT_ID
     };
 
-    // Fetch movie and show genres
+    // Fetch movie and show genres with slug information
     const [movieGenresResponse, showGenresResponse] = await Promise.all([
       axios.get(`${TRAKT_API_URL}/genres/movies`, { headers, timeout: 10000 }),
       axios.get(`${TRAKT_API_URL}/genres/shows`, { headers, timeout: 10000 })
     ]);
 
-    // Combine and deduplicate genres
-    const movieGenres = movieGenresResponse.data?.map(g => g.name) || [];
-    const showGenres = showGenresResponse.data?.map(g => g.name) || [];
-    const allGenres = [...new Set([...movieGenres, ...showGenres])];
+    // Process genres with slug mapping
+    const movieGenres = movieGenresResponse.data?.map(g => ({ name: g.name, slug: g.slug })) || [];
+    const showGenres = showGenresResponse.data?.map(g => ({ name: g.name, slug: g.slug })) || [];
     
-    // Sort alphabetically and add "All" at the beginning
-    allGenres.sort();
-    return ['All', ...allGenres];
+    // Create combined list with "All" option
+    const combinedGenres = ['All'];
+    const seenNames = new Set();
+    
+    [...movieGenres, ...showGenres].forEach(genre => {
+      if (!seenNames.has(genre.name)) {
+        combinedGenres.push(genre.name);
+        seenNames.add(genre.name);
+      }
+    });
+    
+    // Update cache with all necessary data
+    traktGenreCache = {
+      movies: ['All', ...movieGenres.map(g => g.name).sort()],
+      shows: ['All', ...showGenres.map(g => g.name).sort()],
+      combined: combinedGenres.sort((a, b) => a === 'All' ? -1 : b === 'All' ? 1 : a.localeCompare(b)),
+      movieSlugs: Object.fromEntries(movieGenres.map(g => [g.name, g.slug])),
+      showSlugs: Object.fromEntries(showGenres.map(g => [g.name, g.slug])),
+      lastFetched: now
+    };
+
+    console.log(`[Trakt] Cached ${traktGenreCache.combined.length} genres`);
+    
+    return traktGenreCache[type] || traktGenreCache.combined;
   } catch (error) {
     console.error('Failed to fetch Trakt genres:', error.message);
     // Return default genres if API fails
@@ -579,6 +646,19 @@ async function fetchTraktGenres() {
       'Romance', 'Science Fiction', 'Thriller', 'War', 'Western'
     ];
   }
+}
+
+/**
+ * Get Trakt genre slug for API filtering
+ * @param {string} genreName - The genre name to convert to slug
+ * @param {string} contentType - 'movies' or 'shows'
+ * @returns {string|null} The genre slug or null if not found/All
+ */
+function getTraktGenreSlug(genreName, contentType = 'movies') {
+  if (!genreName || genreName === 'All') return null;
+  
+  const slugKey = contentType === 'shows' ? 'showSlugs' : 'movieSlugs';
+  return traktGenreCache[slugKey]?.[genreName] || genreName.toLowerCase().replace(/\s+/g, '-');
 }
 
 /**
@@ -613,5 +693,6 @@ async function validateTraktApi() {
   fetchTraktMetadata,
   batchFetchTraktMetadata,
   fetchTraktGenres,
+  getTraktGenreSlug,
   validateTraktApi
 };

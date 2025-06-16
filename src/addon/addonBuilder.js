@@ -1,11 +1,11 @@
 // src/addon/addonBuilder.js
 const { addonBuilder } = require('stremio-addon-sdk');
-const { fetchTraktListItems, fetchTraktLists, initTraktApi } = require('../integrations/trakt');
+const { fetchTraktListItems, fetchTraktLists, initTraktApi, fetchTraktGenres } = require('../integrations/trakt');
 const { fetchListItems: fetchMDBListItems, fetchAllLists: fetchAllMDBLists, fetchAllListsForUser } = require('../integrations/mdblist');
 const { fetchExternalAddonItems } = require('../integrations/externalAddons');
 const { convertToStremioFormat } = require('./converters');
 const { isWatchlist } = require('../utils/common');
-const { staticGenres, MANIFEST_GENERATION_CONCURRENCY, ENABLE_MANIFEST_CACHE } = require('../config');
+const { staticGenres, mdblistGenres, MANIFEST_GENERATION_CONCURRENCY, ENABLE_MANIFEST_CACHE } = require('../config');
 const axios = require('axios');
 
 // Cache for manifest generation to avoid re-processing unchanged lists
@@ -346,28 +346,120 @@ async function createAddon(userConfig) {
   const hiddenListsSet = new Set(hiddenLists.map(String));
   const removedListsSet = new Set(removedLists.map(String));
   
-  // Determine which genres to use based on metadata source and language
-  const shouldUseTmdbGenres = userConfig.metadataSource === 'tmdb' && userConfig.tmdbLanguage && userConfig.tmdbBearerToken;
-  const shouldUseTmdbLanguageGenres = userConfig.tmdbLanguage && userConfig.tmdbLanguage !== 'en-US' && userConfig.tmdbBearerToken;
-  let availableGenres = staticGenres;
+  // Initialize genre options - we'll determine appropriate genres per list source
+  let defaultGenres = staticGenres;
   
-  if (shouldUseTmdbGenres || shouldUseTmdbLanguageGenres) {
-    try {
-      const { fetchTmdbGenres } = require('../integrations/tmdb');
-      const genreLanguage = userConfig.tmdbLanguage || 'en-US';
-      
-      const tmdbGenres = await Promise.race([
-        fetchTmdbGenres(genreLanguage, userConfig.tmdbBearerToken),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('TMDB genres timeout')), 5000))
-      ]);
-      if (tmdbGenres.length > 0) {
-        availableGenres = tmdbGenres;
-      }
-    } catch (error) {
-      console.warn('Failed to fetch TMDB genres, falling back to static genres:', error.message);
-    }
+  // Fetch source-specific genres in parallel for better performance
+  const genrePromises = {};
+  
+  // Fetch MDBList genres (static, already defined in config)
+  const mdblistGenresAvailable = mdblistGenres;
+  
+  // Fetch Trakt genres if there are Trakt lists
+  if (traktAccessToken) {
+    genrePromises.trakt = fetchTraktGenres('combined').catch(error => {
+      console.warn('Failed to fetch Trakt genres:', error.message);
+      return staticGenres;
+    });
   }
   
+  // Fetch TMDB genres for metadata enhancement (if configured)
+  const shouldUseTmdbGenres = userConfig.metadataSource === 'tmdb' && userConfig.tmdbLanguage && userConfig.tmdbBearerToken;
+  const shouldUseTmdbLanguageGenres = userConfig.tmdbLanguage && userConfig.tmdbLanguage !== 'en-US' && userConfig.tmdbBearerToken;
+  
+  if (shouldUseTmdbGenres || shouldUseTmdbLanguageGenres) {
+    genrePromises.tmdb = Promise.race([
+      (async () => {
+        const { fetchTmdbGenres } = require('../integrations/tmdb');
+        const genreLanguage = userConfig.tmdbLanguage || 'en-US';
+        return await fetchTmdbGenres(genreLanguage, userConfig.tmdbBearerToken);
+      })(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('TMDB genres timeout')), 5000))
+    ]).catch(error => {
+      console.warn('Failed to fetch TMDB genres, falling back to static genres:', error.message);
+      return staticGenres;
+    });
+  }
+  
+  // Wait for all genre fetching to complete
+  const genreResults = await Promise.allSettled(Object.values(genrePromises));
+  const fetchedGenres = {};
+  
+  // Process genre results
+  if (genrePromises.trakt) {
+    const traktResult = await genrePromises.trakt;
+    fetchedGenres.trakt = Array.isArray(traktResult) ? traktResult : staticGenres;
+  }
+  
+  if (genrePromises.tmdb) {
+    const tmdbResult = await genrePromises.tmdb;
+    fetchedGenres.tmdb = Array.isArray(tmdbResult) && tmdbResult.length > 0 ? tmdbResult : staticGenres;
+  }
+  
+  // Set default genres for fallback (prefer TMDB if available for metadata enhancement)
+  if (fetchedGenres.tmdb) {
+    defaultGenres = fetchedGenres.tmdb;
+  }
+  
+  // Helper function to get appropriate genres for a specific list source
+  const getGenresForListSource = (listInfo, catalogId) => {
+    // Check for external addons first (highest priority for imported catalogs)
+    if (importedAddons) {
+      for (const addon of Object.values(importedAddons)) {
+        // Check if this is a Trakt public list import
+        if (addon.isTraktPublicList && String(addon.id) === String(catalogId)) {
+          // Trakt URL imports should use Trakt genres
+          return fetchedGenres.trakt || defaultGenres;
+        }
+        
+        // Check if this is an MDBList URL import
+        if (addon.isMDBListUrlImport && String(addon.id) === String(catalogId)) {
+          // MDBList URL imports should use MDBList genres
+          return mdblistGenresAvailable;
+        }
+        
+        // Check for external addon catalogs with native genre support
+        const catalogEntry = addon.catalogs?.find(c => String(c.id) === String(catalogId));
+        if (catalogEntry) {
+          // Look for genre options in the external addon's catalog definition
+          const genreExtra = catalogEntry.extraSupported?.find(e => 
+            (typeof e === 'object' && e.name === 'genre') || e === 'genre'
+          );
+          
+          if (genreExtra && typeof genreExtra === 'object' && Array.isArray(genreExtra.options) && genreExtra.options.length > 0) {
+            // Use external addon's native genres, but ensure "All" is first
+            const externalGenres = genreExtra.options.filter(g => g !== 'All');
+            return ['All', ...externalGenres];
+          }
+          break;
+        }
+      }
+    }
+    
+    // Determine list source from the list info or catalog ID
+    if (catalogId === 'random_mdblist_catalog' || 
+        catalogId.startsWith('aiolists-') || 
+        listInfo?.source === 'mdblist' || 
+        listInfo?.source === 'mdblist_url') {
+      return mdblistGenresAvailable;
+    }
+    
+    if (catalogId.startsWith('trakt_') || 
+        catalogId.startsWith('traktpublic_') || 
+        listInfo?.source === 'trakt' || 
+        listInfo?.source === 'trakt_public') {
+      return fetchedGenres.trakt || defaultGenres;
+    }
+    
+    if (catalogId.startsWith('tmdb_') || 
+        listInfo?.source === 'tmdb') {
+      return fetchedGenres.tmdb || defaultGenres;
+    }
+    
+    // Default fallback
+    return defaultGenres;
+  };
+
   let tempGeneratedCatalogs = [];
 
   if (enableRandomListFeature && randomMDBListUsernames && randomMDBListUsernames.length > 0) {
@@ -384,7 +476,8 @@ async function createAddon(userConfig) {
     
     const randomCatalogExtra = [{ name: "skip" }];
     if (includeGenresInManifest) {
-        randomCatalogExtra.push({ name: "genre", options: availableGenres, isRequired: false });
+        const randomCatalogGenres = getGenresForListSource(null, randomCatalogId);
+        randomCatalogExtra.push({ name: "genre", options: randomCatalogGenres, isRequired: false });
     }
     tempGeneratedCatalogs.push({
         id: randomCatalogId,
@@ -436,13 +529,24 @@ async function createAddon(userConfig) {
 
     const catalogExtraForThisList = [{ name: "skip" }];
     if (includeGenresInManifest) {
-        let genreOpts = availableGenres;
+        let genreOpts;
+        
         if (isImportedSubCatalog && listSourceInfo.extraSupported && Array.isArray(listSourceInfo.extraSupported)) {
+            // For external addons, use their native genre options if available
             const genreExtraDef = listSourceInfo.extraSupported.find(e => typeof e === 'object' && e.name === 'genre');
             if (genreExtraDef && Array.isArray(genreExtraDef.options) && genreExtraDef.options.length > 0) {
-                genreOpts = genreExtraDef.options;
+                // Ensure "All" is first in external addon genres
+                const externalGenres = genreExtraDef.options.filter(g => g !== 'All');
+                genreOpts = ['All', ...externalGenres];
+            } else {
+                // Fallback to source-specific genres for external addons
+                genreOpts = getGenresForListSource(listSourceInfo, currentListId);
             }
+        } else {
+            // Use source-specific genres for native lists
+            genreOpts = getGenresForListSource(listSourceInfo, currentListId);
         }
+        
         catalogExtraForThisList.push({
             name: "genre",
             options: genreOpts,
@@ -1171,46 +1275,31 @@ async function createAddon(userConfig) {
 
     }
     
-    // Apply genre filtering after enrichment (since we removed it from integration layer)
+    // Genre filtering is now handled at the API level for MDBList and Trakt
+    // External addons may still need post-processing filtering if they don't support native filtering
     if (genre && genre !== 'All' && metas.length > 0) {
-        const beforeFilterCount = metas.length;
-        
-        // Debug: Log genre information for external addon items
         const isExternalAddon = importedAddons && Object.values(importedAddons).some(addon => 
-          addon.catalogs?.some(catalog => String(catalog.id) === String(id))
+          addon.catalogs?.some(catalog => String(catalog.id) === String(id)) &&
+          !addon.isMDBListUrlImport && !addon.isTraktPublicList
         );
         
+        // Only apply post-processing filter for external addons that don't support native filtering
         if (isExternalAddon) {
-          const itemsWithGenres = metas.filter(meta => meta.genres && meta.genres.length > 0);
-          const itemsWithoutGenres = metas.filter(meta => !meta.genres || meta.genres.length === 0);
+          const beforeFilterCount = metas.length;
           
-          if (itemsWithGenres.length > 0) {
-            console.log(`[Genre Filter] Sample genres found:`, itemsWithGenres.slice(0, 3).map(item => ({
-              name: item.name,
-              genres: item.genres
-            })));
-          }
+          metas = metas.filter(meta => {
+              if (!meta.genres) return false;
+              const itemGenres = Array.isArray(meta.genres) ? meta.genres : [meta.genres];
+              return itemGenres.some(g => 
+                  String(g).toLowerCase() === String(genre).toLowerCase()
+              );
+          });
           
-          if (itemsWithoutGenres.length > 0) {
-            console.log(`[Genre Filter] Sample items without genres:`, itemsWithoutGenres.slice(0, 3).map(item => ({
-              id: item.id,
-              name: item.name,
-              hasGenres: !!item.genres
-            })));
-          }
-        }
-        
-        metas = metas.filter(meta => {
-            if (!meta.genres) return false;
-            const itemGenres = Array.isArray(meta.genres) ? meta.genres : [meta.genres];
-            return itemGenres.some(g => 
-                String(g).toLowerCase() === String(genre).toLowerCase()
-            );
-        });
-        
-        if (isExternalAddon) {
           console.log(`[Genre Filter] External addon "${id}": Filtered from ${beforeFilterCount} to ${metas.length} items for genre "${genre}"`);
         }
+        
+        // For MDBList, Trakt, and compatible external addons, filtering is done at API level
+        // so no additional filtering needed here
     }
     
     const cacheMaxAge = (id === 'random_mdblist_catalog' || isWatchlist(id)) ? 0 : (5 * 60);

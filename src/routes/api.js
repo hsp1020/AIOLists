@@ -1,6 +1,6 @@
 // src/routes/api.js
 const path = require('path');
-const { defaultConfig, staticGenres, TMDB_BEARER_TOKEN, TMDB_REDIRECT_URI, TRAKT_REDIRECT_URI } = require('../config');
+const { defaultConfig, staticGenres, mdblistGenres, TMDB_BEARER_TOKEN, TMDB_REDIRECT_URI, TRAKT_REDIRECT_URI } = require('../config');
 const { compressConfig, decompressConfig, compressShareableConfig, createShareableConfig } = require('../utils/urlConfig');
 const { createAddon, fetchListContent } = require('../addon/addonBuilder');
 const { convertToStremioFormat } = require('../addon/converters');
@@ -2094,9 +2094,29 @@ module.exports = function(router) {
 
   router.get('/:configHash/genres', async (req, res) => {
     try {
-      let genres = staticGenres;
+      // Return genres by source for better client-side handling
+      const genresBySource = {
+        static: staticGenres,
+        mdblist: mdblistGenres,
+        trakt: staticGenres, // Will be fetched dynamically when needed
+        tmdb: staticGenres,  // Will be fetched dynamically when needed
+        external: {}         // Will be populated with external addon genres
+      };
       
-      // Use TMDB genres if TMDB is selected and Bearer Token is available
+      // Fetch Trakt genres if user has Trakt access
+      if (req.userConfig.traktAccessToken) {
+        try {
+          const { fetchTraktGenres } = require('../integrations/trakt');
+          const traktGenres = await fetchTraktGenres('combined');
+          if (Array.isArray(traktGenres) && traktGenres.length > 0) {
+            genresBySource.trakt = traktGenres;
+          }
+        } catch (error) {
+          console.warn('Failed to fetch Trakt genres for API response:', error.message);
+        }
+      }
+      
+      // Fetch TMDB genres if TMDB is configured
       if (req.userConfig.metadataSource === 'tmdb' && req.userConfig.tmdbLanguage) {
         const tmdbBearerToken = req.userConfig.tmdbBearerToken || TMDB_BEARER_TOKEN;
         if (tmdbBearerToken) {
@@ -2104,7 +2124,7 @@ module.exports = function(router) {
             const { fetchTmdbGenres } = require('../integrations/tmdb');
             const tmdbGenres = await fetchTmdbGenres(req.userConfig.tmdbLanguage, tmdbBearerToken);
             if (tmdbGenres.length > 0) {
-              genres = tmdbGenres;
+              genresBySource.tmdb = tmdbGenres;
             }
           } catch (error) {
             console.warn('Failed to fetch TMDB genres for API response:', error.message);
@@ -2112,7 +2132,32 @@ module.exports = function(router) {
         }
       }
       
-      res.json({ success: true, genres });
+      // Extract external addon genres from imported addons
+      if (req.userConfig.importedAddons) {
+        for (const [addonId, addon] of Object.entries(req.userConfig.importedAddons)) {
+          if (addon.catalogs) {
+            for (const catalog of addon.catalogs) {
+              const genreExtra = catalog.extraSupported?.find(e => 
+                (typeof e === 'object' && e.name === 'genre') || e === 'genre'
+              );
+              
+              if (genreExtra && typeof genreExtra === 'object' && Array.isArray(genreExtra.options)) {
+                const externalGenres = genreExtra.options.filter(g => g !== 'All');
+                genresBySource.external[catalog.id] = ['All', ...externalGenres];
+              }
+            }
+          }
+        }
+      }
+      
+      // Return default genres for backward compatibility and source-specific genres for advanced usage
+      const defaultGenres = genresBySource.tmdb.length > 1 ? genresBySource.tmdb : staticGenres;
+      
+      res.json({ 
+        success: true, 
+        genres: defaultGenres, // Backward compatibility
+        genresBySource // New source-specific approach
+      });
     } catch (error) {
       console.error('Error fetching genres:', error);
       res.status(500).json({ success: false, error: 'Failed to fetch genres' });

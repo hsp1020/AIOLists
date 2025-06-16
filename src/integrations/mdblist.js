@@ -338,6 +338,11 @@ async function fetchListItemsFromPublicJson(username, listSlug, skip = 0, sort =
       params.append('order', 'asc');
     }
     
+    // Add genre filtering for public JSON if specified
+    if (genre && genre !== 'All') {
+      params.append('filter_genre', genre.toLowerCase());
+    }
+    
     // Add unified parameter for mergeable lists (combines movies and shows)
     if (isMergedByUser) {
       params.append('unified', 'true');
@@ -390,12 +395,9 @@ async function fetchListItemsFromPublicJson(username, listSlug, skip = 0, sort =
       };
     }).filter(item => item.imdb_id); // Only keep items with valid IMDB IDs
 
-    // Apply genre filter if specified
+    // API-level filtering is already applied via URL parameters
+    // No need for additional client-side filtering
     let filteredItems = processedItems;
-    if (genre && genre !== 'All') {
-      // For public JSON, we don't have genre data, so we'll need to enrich first
-
-    }
 
     // No metadata enrichment here - this will be done in the addon builder when serving to Stremio
     let enrichedItems = filteredItems;
@@ -466,7 +468,7 @@ async function fetchListItems(
     return null;
   }
 
-  const MAX_ATTEMPTS_FOR_GENRE_FILTER = 1;
+  const MAX_ATTEMPTS_FOR_GENRE_FILTER = 10; // Allow more attempts for proper pagination with genre filtering
   const MDBLIST_PAGE_LIMIT = ITEMS_PER_PAGE;
 
   let effectiveMdbListId = String(listId); // Ensure it's a string (could be numeric ID or slug)
@@ -483,7 +485,7 @@ async function fetchListItems(
   // The usernameForRandomList parameter indicates we are fetching items for a list from a specific user (not the API key owner)
   const listOwnerUsername = usernameForRandomList;
 
-  if (genre) { // If genre filtering is needed
+  if (genre && genre !== 'All') { // If genre filtering is needed
     while (allEnrichedGenreItems.length < stremioSkip + MDBLIST_PAGE_LIMIT && attemptsForGenreCompletion < MAX_ATTEMPTS_FOR_GENRE_FILTER && morePagesFromMdbList) {
       let apiUrl;
       const params = new URLSearchParams({
@@ -493,6 +495,11 @@ async function fetchListItems(
         limit: MDBLIST_PAGE_LIMIT,
         offset: mdbListOffset
       });
+
+      // Add MDBList native genre filtering
+      if (genre && genre !== 'All') {
+        params.append('filter_genre', genre.toLowerCase());
+      }
 
       if (isMergedByUser && effectiveMdbListId !== 'watchlist' && effectiveMdbListId !== 'watchlist-W' && !listOwnerUsername) {
           params.append('unified', 'true');
@@ -585,17 +592,16 @@ async function fetchListItems(
 
       if (!initialItemsFlat || initialItemsFlat.length === 0) { morePagesFromMdbList = false; break; }
       
-      // Note: Genre filtering is now handled after metadata enrichment in the addon builder
-      // This ensures TMDB-enriched genres are properly used for filtering
-      const genreItemsFromPage = initialItemsFlat;
-      allEnrichedGenreItems.push(...genreItemsFromPage);
+      // With API-level filtering, we can now directly use the items from MDBList
+      // No need for post-processing genre filtering since MDBList handles it natively
+      allEnrichedGenreItems.push(...initialItemsFlat);
       mdbListOffset += MDBLIST_PAGE_LIMIT;
       attemptsForGenreCompletion++;
       if (morePagesFromMdbList && attemptsForGenreCompletion < MAX_ATTEMPTS_FOR_GENRE_FILTER) await delay(1250);
     }
     allItems = allEnrichedGenreItems.slice(stremioSkip, stremioSkip + ITEMS_PER_PAGE);
 
-  } else { // No genre filtering, direct fetch
+  } else { // No genre filtering or All genre selected, direct fetch
     let apiUrl;
     mdbListOffset = stremioSkip;
     const params = new URLSearchParams({
@@ -605,6 +611,11 @@ async function fetchListItems(
         limit: ITEMS_PER_PAGE, // Use ITEMS_PER_PAGE from config
         offset: mdbListOffset
       });
+
+    // Add MDBList native genre filtering even for direct fetch if genre is specified
+    if (genre && genre !== 'All') {
+      params.append('filter_genre', genre.toLowerCase());
+    }
 
     if (isMergedByUser && effectiveMdbListId !== 'watchlist' && effectiveMdbListId !== 'watchlist-W' && !listOwnerUsername) {
         params.append('unified', 'true');

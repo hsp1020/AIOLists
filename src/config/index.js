@@ -19,11 +19,66 @@ const TMDB_REDIRECT_URI = process.env.TMDB_REDIRECT_URI || '';
 const TMDB_BEARER_TOKEN = process.env.TMDB_BEARER_TOKEN || '';
 const CUSTOM_HTML_BLURB = process.env.CUSTOM_HTML_BLURB || '';
 
+// Default genres for general use (fallback)
 const staticGenres = [
   "All","Action", "Adventure", "Animation", "Anime", "Biography", "Comedy", "Crime",
   "Documentary", "Drama", "Family", "Fantasy", "History", "Horror",
   "Music", "Musical", "Mystery", "Romance", "Sci-Fi", "Short", "Sport",
   "Thriller", "War", "Western", "Game-Show"
+];
+
+// MDBList specific genres (as provided by user)
+const mdblistGenres = [
+  "All", // Keep "All" as first option
+  "action",
+  "anime",
+  "comedy",
+  "crime",
+  "documentary",
+  "drama",
+  "family",
+  "fantasy",
+  "history",
+  "holiday",
+  "horror",
+  "music",
+  "musical",
+  "mystery",
+  "science-fiction",
+  "short",
+  "sporting-event",
+  "superhero",
+  "suspense",
+  "thriller",
+  "war",
+  "western",
+  "animation",
+  "adventure",
+  "romance",
+  "reality",
+  "soap",
+  "news",
+  "talk-show",
+  "biography",
+  "sci-fi",
+  "sport",
+  "adult",
+  "film-noir",
+  "reality-tv",
+  "game-show",
+  "special-interest",
+  "children",
+  "home-and-garden",
+  "tv-movie",
+  "sports",
+  "eastern",
+  "disaster",
+  "donghua",
+  "sci-fi-fantasy",
+  "action-adventure",
+  "talk",
+  "war-politics",
+  "kids"
 ];
 
 const defaultConfig = {
@@ -106,6 +161,7 @@ module.exports = {
   PORT,
   IS_PRODUCTION,
   staticGenres,
+  mdblistGenres,
   // Performance constants
   METADATA_BATCH_SIZE,
   POSTER_BATCH_SIZE,
