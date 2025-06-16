@@ -363,24 +363,16 @@ async function createAddon(userConfig) {
     });
   }
   
-  // Fetch TMDB genres for metadata enhancement (if configured)
-  const shouldUseTmdbGenres = userConfig.metadataSource === 'tmdb' && userConfig.tmdbLanguage && userConfig.tmdbBearerToken;
-  const shouldUseTmdbLanguageGenres = userConfig.tmdbLanguage && userConfig.tmdbLanguage !== 'en-US' && userConfig.tmdbBearerToken;
-  
-  if (shouldUseTmdbGenres || shouldUseTmdbLanguageGenres) {
+  // Fetch TMDB genres only for TMDB lists (no translation complexity for filtering)
+  if (userConfig.tmdbSessionId && userConfig.tmdbAccountId) {
     genrePromises.tmdb = Promise.race([
       (async () => {
-        const { fetchTmdbGenres, createTmdbGenreTranslationMap } = require('../integrations/tmdb');
+        const { fetchTmdbGenres } = require('../integrations/tmdb');
         const genreLanguage = userConfig.tmdbLanguage || 'en-US';
         
-        // Fetch both translated genres and translation map in parallel
-        const [translatedGenres, translationMap] = await Promise.all([
-          fetchTmdbGenres(genreLanguage, userConfig.tmdbBearerToken),
-          createTmdbGenreTranslationMap(genreLanguage, userConfig.tmdbBearerToken)
-        ]);
-        
-        // Return both genres and translation map
-        return { genres: translatedGenres, translationMap };
+        // Just fetch translated genres for TMDB lists
+        const translatedGenres = await fetchTmdbGenres(genreLanguage, userConfig.tmdbBearerToken);
+        return translatedGenres;
       })(),
       new Promise((_, reject) => setTimeout(() => reject(new Error('TMDB genres timeout')), 5000))
     ]).catch(error => {
@@ -403,24 +395,11 @@ async function createAddon(userConfig) {
   
   if (genrePromises.tmdb) {
     const tmdbResult = await genrePromises.tmdb;
-    if (tmdbResult && typeof tmdbResult === 'object' && tmdbResult.genres) {
-      // New format with translation map
-      fetchedGenres.tmdb = Array.isArray(tmdbResult.genres) && tmdbResult.genres.length > 0 ? tmdbResult.genres : staticGenres;
-      fetchedGenres.tmdbTranslationMap = tmdbResult.translationMap || new Map();
-    } else if (Array.isArray(tmdbResult) && tmdbResult.length > 0) {
-      // Fallback for old format
-      fetchedGenres.tmdb = tmdbResult;
-      fetchedGenres.tmdbTranslationMap = new Map();
-    } else {
-      fetchedGenres.tmdb = staticGenres;
-      fetchedGenres.tmdbTranslationMap = new Map();
-    }
+    fetchedGenres.tmdb = Array.isArray(tmdbResult) && tmdbResult.length > 0 ? tmdbResult : staticGenres;
   }
   
-  // Set default genres for fallback (prefer TMDB if available for metadata enhancement)
-  if (fetchedGenres.tmdb) {
-    defaultGenres = fetchedGenres.tmdb;
-  }
+  // Set default genres for fallback
+  defaultGenres = staticGenres;
   
   // Helper function to get appropriate genres for a specific list source
   const getGenresForListSource = (listInfo, catalogId) => {
@@ -429,14 +408,12 @@ async function createAddon(userConfig) {
       for (const addon of Object.values(importedAddons)) {
         // Check if this is a Trakt public list import
         if (addon.isTraktPublicList && String(addon.id) === String(catalogId)) {
-          // Trakt URL imports should use Trakt genres
           return fetchedGenres.trakt || defaultGenres;
         }
         
         // Check if this is an MDBList URL import
         if (addon.isMDBListUrlImport && String(addon.id) === String(catalogId)) {
-          // MDBList URL imports should use translated genres if available, fallback to MDBList genres
-          return fetchedGenres.tmdb || mdblistGenresAvailable;
+          return mdblistGenresAvailable;
         }
         
         // Check for external addon catalogs with native genre support
@@ -462,8 +439,7 @@ async function createAddon(userConfig) {
         catalogId.startsWith('aiolists-') || 
         listInfo?.source === 'mdblist' || 
         listInfo?.source === 'mdblist_url') {
-      // For MDBList sources, use translated genres if available (for display), fallback to MDBList genres
-      return fetchedGenres.tmdb || mdblistGenresAvailable;
+      return mdblistGenresAvailable;
     }
     
     if (catalogId.startsWith('trakt_') || 
@@ -1235,40 +1211,7 @@ async function createAddon(userConfig) {
     // Handle regular list catalogs
     const fetchStartTime = Date.now();
     
-    // Translate genre for API filtering based on list source
-    let genreForApiFiltering = genre;
-    if (genre && genre !== 'All' && 
-        userConfig.tmdbLanguage && 
-        userConfig.tmdbLanguage !== 'en-US' &&
-        fetchedGenres.tmdbTranslationMap) {
-      
-      // Determine if this is an MDBList source that needs special mapping
-      const isMdbListSource = id === 'random_mdblist_catalog' || 
-                             id.startsWith('aiolists-') ||
-                             (importedAddons && Object.values(importedAddons).some(addon => 
-                               addon.isMDBListUrlImport && String(addon.id) === String(id)
-                             ));
-      
-      if (isMdbListSource) {
-        // For MDBList sources, use the specialized TMDB->MDBList mapping
-        const { mapTmdbGenreToMdblist } = require('../integrations/tmdb');
-        genreForApiFiltering = mapTmdbGenreToMdblist(genre, fetchedGenres.tmdbTranslationMap);
-        
-        if (genreForApiFiltering !== genre) {
-          console.log(`[Genre Translation] Mapped "${genre}" to MDBList genre "${genreForApiFiltering}" for API filtering`);
-        }
-      } else {
-        // For other sources (Trakt, TMDB), use standard translation
-        const { translateGenreToEnglish } = require('../integrations/tmdb');
-        genreForApiFiltering = translateGenreToEnglish(genre, fetchedGenres.tmdbTranslationMap);
-        
-        if (genreForApiFiltering !== genre) {
-          console.log(`[Genre Translation] Translated "${genre}" to "${genreForApiFiltering}" for API filtering`);
-        }
-      }
-    }
-    
-    const itemsResult = await fetchListContent(id, userConfig, skip, genreForApiFiltering, type); 
+    const itemsResult = await fetchListContent(id, userConfig, skip, genre, type); 
     const fetchEndTime = Date.now();
     
     
