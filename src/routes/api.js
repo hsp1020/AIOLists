@@ -2117,14 +2117,29 @@ module.exports = function(router) {
       }
       
       // Fetch TMDB genres if TMDB is configured
+      let tmdbTranslationInfo = null;
       if (req.userConfig.metadataSource === 'tmdb' && req.userConfig.tmdbLanguage) {
         const tmdbBearerToken = req.userConfig.tmdbBearerToken || TMDB_BEARER_TOKEN;
         if (tmdbBearerToken) {
           try {
-            const { fetchTmdbGenres } = require('../integrations/tmdb');
-            const tmdbGenres = await fetchTmdbGenres(req.userConfig.tmdbLanguage, tmdbBearerToken);
+            const { fetchTmdbGenres, createTmdbGenreTranslationMap } = require('../integrations/tmdb');
+            
+            // Fetch both translated genres and translation map
+            const [tmdbGenres, translationMap] = await Promise.all([
+              fetchTmdbGenres(req.userConfig.tmdbLanguage, tmdbBearerToken),
+              createTmdbGenreTranslationMap(req.userConfig.tmdbLanguage, tmdbBearerToken)
+            ]);
+            
             if (tmdbGenres.length > 0) {
               genresBySource.tmdb = tmdbGenres;
+              
+              // Add translation info if available
+              if (translationMap && translationMap.size > 0) {
+                tmdbTranslationInfo = {
+                  language: req.userConfig.tmdbLanguage,
+                  mappingsCount: translationMap.size / 2 // Divided by 2 because we store both normal and lowercase versions
+                };
+              }
             }
           } catch (error) {
             console.warn('Failed to fetch TMDB genres for API response:', error.message);
@@ -2153,11 +2168,18 @@ module.exports = function(router) {
       // Return default genres for backward compatibility and source-specific genres for advanced usage
       const defaultGenres = genresBySource.tmdb.length > 1 ? genresBySource.tmdb : staticGenres;
       
-      res.json({ 
+      const response = { 
         success: true, 
         genres: defaultGenres, // Backward compatibility
         genresBySource // New source-specific approach
-      });
+      };
+      
+      // Include TMDB translation information if available
+      if (tmdbTranslationInfo) {
+        response.tmdbTranslation = tmdbTranslationInfo;
+      }
+      
+      res.json(response);
     } catch (error) {
       console.error('Error fetching genres:', error);
       res.status(500).json({ success: false, error: 'Failed to fetch genres' });

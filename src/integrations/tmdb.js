@@ -659,11 +659,11 @@ async function fetchTmdbMetadata(tmdbId, type, language = 'en-US', userBearerTok
       try {
     
         
-        // Fetch episode data for all seasons (limit to first 10 seasons for performance)
-        const maxSeasons = Math.min(data.number_of_seasons, 10);
+        // Fetch episode data for all seasons (no limit)
+        const totalSeasons = data.number_of_seasons;
         const seasonPromises = [];
         
-        for (let seasonNum = 0; seasonNum <= maxSeasons; seasonNum++) {
+        for (let seasonNum = 0; seasonNum <= totalSeasons; seasonNum++) {
           // Skip season 0 if it has no episodes or if there are too many seasons
           if (seasonNum === 0 && data.number_of_seasons > 5) continue;
           
@@ -1092,11 +1092,202 @@ async function fetchTmdbGenres(language = 'en-US', userBearerToken = DEFAULT_TMD
 }
 
 /**
+ * Create a mapping between localized genre names and English names using TMDB genre IDs
+ * @param {string} language - User's language code (e.g., 'fr-FR', 'es-ES')
+ * @param {string} userBearerToken - User's TMDB Read Access Token
+ * @returns {Promise<Map>} Map from localized genre name to English genre name
+ */
+async function createTmdbGenreTranslationMap(language = 'en-US', userBearerToken = DEFAULT_TMDB_BEARER_TOKEN) {
+  // No translation needed for English
+  if (!language || language === 'en-US' || language === 'en') {
+    return new Map();
+  }
+  
+  const cacheKey = `tmdb_genre_translation_${language}`;
+  const cachedMap = tmdbCache.get(cacheKey);
+  if (cachedMap) {
+    return cachedMap === 'null' ? new Map() : new Map(cachedMap);
+  }
+  
+  try {
+    const headers = {
+      'accept': 'application/json',
+      'Authorization': `Bearer ${userBearerToken}`
+    };
+
+    // Fetch both English and localized versions in parallel
+    const [
+      movieResponseEn, tvResponseEn,
+      movieResponseLoc, tvResponseLoc
+    ] = await Promise.all([
+      axios.get(`${TMDB_BASE_URL_V3}/genre/movie/list`, {
+        params: { language: 'en-US' },
+        headers,
+        timeout: TMDB_REQUEST_TIMEOUT
+      }),
+      axios.get(`${TMDB_BASE_URL_V3}/genre/tv/list`, {
+        params: { language: 'en-US' },
+        headers,
+        timeout: TMDB_REQUEST_TIMEOUT
+      }),
+      axios.get(`${TMDB_BASE_URL_V3}/genre/movie/list`, {
+        params: { language: language },
+        headers,
+        timeout: TMDB_REQUEST_TIMEOUT
+      }),
+      axios.get(`${TMDB_BASE_URL_V3}/genre/tv/list`, {
+        params: { language: language },
+        headers,
+        timeout: TMDB_REQUEST_TIMEOUT
+      })
+    ]);
+
+    const movieGenresEn = movieResponseEn.data?.genres || [];
+    const tvGenresEn = tvResponseEn.data?.genres || [];
+    const movieGenresLoc = movieResponseLoc.data?.genres || [];
+    const tvGenresLoc = tvResponseLoc.data?.genres || [];
+
+    // Create ID-based mapping from English genres
+    const genreIdToEnglish = new Map();
+    [...movieGenresEn, ...tvGenresEn].forEach(genre => {
+      genreIdToEnglish.set(genre.id, genre.name);
+    });
+
+    // Create localized-to-English mapping using genre IDs
+    const translationMap = new Map();
+    [...movieGenresLoc, ...tvGenresLoc].forEach(genre => {
+      const englishName = genreIdToEnglish.get(genre.id);
+      if (englishName && genre.name !== englishName) {
+        // Map localized name to English name
+        translationMap.set(genre.name, englishName);
+        // Also add lowercase versions for better matching
+        translationMap.set(genre.name.toLowerCase(), englishName.toLowerCase());
+      }
+    });
+
+    console.log(`[TMDB] Created genre translation map for ${language} with ${translationMap.size / 2} unique mappings`);
+    
+    // Cache for 24 hours (store as array of entries for JSON serialization)
+    tmdbCache.set(cacheKey, Array.from(translationMap.entries()), 24 * 3600 * 1000);
+    return translationMap;
+
+  } catch (error) {
+    console.error(`[TMDB] Error creating genre translation map for ${language}:`, error.message);
+    tmdbCache.set(cacheKey, 'null', 60 * 60 * 1000); // Cache error for 1 hour
+    return new Map();
+  }
+}
+
+/**
+ * Translate a localized genre name to English for API filtering with MDBList/Trakt
+ * @param {string} localizedGenre - Genre name in user's language
+ * @param {Map} translationMap - Translation map from createTmdbGenreTranslationMap
+ * @returns {string} English genre name or original if no translation found
+ */
+function translateGenreToEnglish(localizedGenre, translationMap) {
+  if (!localizedGenre || localizedGenre === 'All' || !translationMap || translationMap.size === 0) {
+    return localizedGenre;
+  }
+
+  // Try exact match first
+  const exactMatch = translationMap.get(localizedGenre);
+  if (exactMatch) {
+    return exactMatch;
+  }
+
+  // Try lowercase match
+  const lowercaseMatch = translationMap.get(localizedGenre.toLowerCase());
+  if (lowercaseMatch) {
+    return lowercaseMatch;
+  }
+
+  // No translation found, return original
+  console.log(`[TMDB] No translation found for genre "${localizedGenre}", using original for API filtering`);
+  return localizedGenre;
+}
+
+/**
  * Clear all TMDB caches
  */
 function clearTmdbCaches() {
   tmdbCache.clear();
   imdbToTmdbCache.clear();
+}
+
+/**
+ * Map TMDB genre names to MDBList genre names for API filtering
+ * @param {string} tmdbGenre - Genre name from TMDB (could be in any language)
+ * @param {Map} translationMap - Translation map from localized to English
+ * @returns {string} MDBList-compatible genre name
+ */
+function mapTmdbGenreToMdblist(tmdbGenre, translationMap = new Map()) {
+  if (!tmdbGenre || tmdbGenre === 'All') {
+    return tmdbGenre;
+  }
+
+  // First translate to English if needed
+  let englishGenre = tmdbGenre;
+  if (translationMap && translationMap.size > 0) {
+    const translated = translateGenreToEnglish(tmdbGenre, translationMap);
+    if (translated) {
+      englishGenre = translated;
+    }
+  }
+
+  // Map TMDB English genres to MDBList genres
+  const tmdbToMdblistMap = {
+    'Action': 'action',
+    'Adventure': 'adventure', 
+    'Animation': 'animation',
+    'Comedy': 'comedy',
+    'Crime': 'crime',
+    'Documentary': 'documentary',
+    'Drama': 'drama',
+    'Family': 'family',
+    'Fantasy': 'fantasy',
+    'History': 'history',
+    'Horror': 'horror',
+    'Music': 'music',
+    'Musical': 'musical',
+    'Mystery': 'mystery',
+    'Romance': 'romance',
+    'Science Fiction': 'science-fiction',
+    'Thriller': 'thriller',
+    'War': 'war',
+    'Western': 'western',
+    'Biography': 'biography',
+    'Sport': 'sport',
+    'Short': 'short',
+    // Additional mappings for common variations
+    'Sci-Fi': 'science-fiction',
+    'Sci-Fi & Fantasy': 'science-fiction',
+    'Action & Adventure': 'action-adventure',
+    'War & Politics': 'war-politics',
+    'Kids': 'kids',
+    'Reality': 'reality',
+    'Talk': 'talk',
+    'News': 'news',
+    'Soap': 'soap',
+    'TV Movie': 'tv-movie'
+  };
+
+  // Try exact match first
+  const exactMatch = tmdbToMdblistMap[englishGenre];
+  if (exactMatch) {
+    return exactMatch;
+  }
+
+  // Try case-insensitive match
+  const lowerGenre = englishGenre.toLowerCase();
+  for (const [tmdbKey, mdblistValue] of Object.entries(tmdbToMdblistMap)) {
+    if (tmdbKey.toLowerCase() === lowerGenre) {
+      return mdblistValue;
+    }
+  }
+
+  // If no mapping found, return lowercase version
+  console.log(`[TMDB->MDBList] No mapping found for genre "${englishGenre}", using lowercase version`);
+  return englishGenre.toLowerCase();
 }
 
 module.exports = {
@@ -1110,5 +1301,8 @@ module.exports = {
   fetchTmdbMetadata,
   batchFetchTmdbMetadata,
   fetchTmdbGenres,
-  clearTmdbCaches
+  createTmdbGenreTranslationMap,
+  translateGenreToEnglish,
+  clearTmdbCaches,
+  mapTmdbGenreToMdblist
 }; 
