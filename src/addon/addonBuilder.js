@@ -279,7 +279,7 @@ async function createAddon(userConfig) {
   await initTraktApi(userConfig);
   const manifest = {
     id: 'org.stremio.aiolists',
-    version: `1.2.7-${Date.now()}`,
+    version: `1.2.8-${Date.now()}`,
     name: 'AIOLists',
     description: 'Manage all your lists in one place.',
     resources: ['catalog', 'meta'],
