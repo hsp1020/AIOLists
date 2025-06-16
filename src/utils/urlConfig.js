@@ -72,7 +72,7 @@ async function decompressConfig(compressed) {
         console.warn('DecompressConfig: Decompressed string is empty.');
       }
     } catch (decompressOrParseError) {
-      console.error('Error decompressing or parsing config:', decompressOrParseError.message, '- Hash was:', compressed.substring(0, 20) + "...");
+      console.error('Error decompressing or parsing config:', decompressOrParseError.message, '- Hash was:', compressed.substring(0, 200) + "...");
       // Fallback to default config on error
       return { ...defaultConfig };
     }
