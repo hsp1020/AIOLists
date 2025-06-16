@@ -567,6 +567,44 @@ async function batchFetchTraktMetadata(items) {
   return results;
 }
   
+// Hardcoded Trakt genres as fallback when API is not accessible
+const TRAKT_FALLBACK_GENRES = [
+  { "name": "Action", "slug": "action" },
+  { "name": "Adventure", "slug": "adventure" },
+  { "name": "Animation", "slug": "animation" },
+  { "name": "Anime", "slug": "anime" },
+  { "name": "Comedy", "slug": "comedy" },
+  { "name": "Crime", "slug": "crime" },
+  { "name": "Disaster", "slug": "disaster" },
+  { "name": "Documentary", "slug": "documentary" },
+  { "name": "donghua", "slug": "Donghua" },
+  { "name": "Drama", "slug": "drama" },
+  { "name": "Eastern", "slug": "eastern" },
+  { "name": "Family", "slug": "family" },
+  { "name": "Fan Film", "slug": "fan-film" },
+  { "name": "Fantasy", "slug": "fantasy" },
+  { "name": "Film Noir", "slug": "film-noir" },
+  { "name": "History", "slug": "history" },
+  { "name": "Holiday", "slug": "holiday" },
+  { "name": "Horror", "slug": "horror" },
+  { "name": "Indie", "slug": "indie" },
+  { "name": "Music", "slug": "music" },
+  { "name": "Musical", "slug": "musical" },
+  { "name": "Mystery", "slug": "mystery" },
+  { "name": "None", "slug": "none" },
+  { "name": "Road", "slug": "road" },
+  { "name": "Romance", "slug": "romance" },
+  { "name": "Science Fiction", "slug": "science-fiction" },
+  { "name": "Short", "slug": "short" },
+  { "name": "Sports", "slug": "sports" },
+  { "name": "Sporting Event", "slug": "sporting-event" },
+  { "name": "Suspense", "slug": "suspense" },
+  { "name": "Thriller", "slug": "thriller" },
+  { "name": "Tv Movie", "slug": "tv-movie" },
+  { "name": "War", "slug": "war" },
+  { "name": "Western", "slug": "western" }
+];
+
 // Trakt genre cache to avoid repeated API calls
 let traktGenreCache = {
   movies: null,
@@ -603,15 +641,30 @@ async function fetchTraktGenres(type = 'combined') {
       'trakt-api-key': TRAKT_CLIENT_ID
     };
 
-    // Fetch movie and show genres with slug information
-    const [movieGenresResponse, showGenresResponse] = await Promise.all([
-      axios.get(`${TRAKT_API_URL}/genres/movies`, { headers, timeout: 10000 }),
-      axios.get(`${TRAKT_API_URL}/genres/shows`, { headers, timeout: 10000 })
-    ]);
+    let apiCallsSucceeded = false;
+    let movieGenres = [];
+    let showGenres = [];
 
-    // Process genres with slug mapping
-    const movieGenres = movieGenresResponse.data?.map(g => ({ name: g.name, slug: g.slug })) || [];
-    const showGenres = showGenresResponse.data?.map(g => ({ name: g.name, slug: g.slug })) || [];
+    try {
+      // Fetch movie and show genres with slug information
+      const [movieGenresResponse, showGenresResponse] = await Promise.all([
+        axios.get(`${TRAKT_API_URL}/genres/movies`, { headers, timeout: 10000 }),
+        axios.get(`${TRAKT_API_URL}/genres/shows`, { headers, timeout: 10000 })
+      ]);
+
+      // Process genres with slug mapping
+      movieGenres = movieGenresResponse.data?.map(g => ({ name: g.name, slug: g.slug })) || [];
+      showGenres = showGenresResponse.data?.map(g => ({ name: g.name, slug: g.slug })) || [];
+      apiCallsSucceeded = true;
+      
+    } catch (apiError) {
+      console.warn('Failed to fetch Trakt genres from API:', apiError.message);
+      console.log('[Trakt] Using hardcoded fallback genres');
+      
+      // Use hardcoded fallback genres
+      movieGenres = TRAKT_FALLBACK_GENRES;
+      showGenres = TRAKT_FALLBACK_GENRES;
+    }
     
     // Create combined list with "All" option
     const combinedGenres = ['All'];
@@ -634,17 +687,29 @@ async function fetchTraktGenres(type = 'combined') {
       lastFetched: now
     };
 
-    console.log(`[Trakt] Cached ${traktGenreCache.combined.length} genres`);
+    const sourceInfo = apiCallsSucceeded ? 'API' : 'hardcoded fallback';
+    console.log(`[Trakt] Cached ${traktGenreCache.combined.length} genres from ${sourceInfo}`);
     
     return traktGenreCache[type] || traktGenreCache.combined;
   } catch (error) {
     console.error('Failed to fetch Trakt genres:', error.message);
-    // Return default genres if API fails
-    return [
-      'All', 'Action', 'Adventure', 'Animation', 'Comedy', 'Crime', 'Documentary',
-      'Drama', 'Family', 'Fantasy', 'History', 'Horror', 'Music', 'Mystery',
-      'Romance', 'Science Fiction', 'Thriller', 'War', 'Western'
-    ];
+    
+    // Final fallback - use hardcoded genres
+    console.log('[Trakt] Using final hardcoded fallback genres');
+    const fallbackGenreNames = ['All', ...TRAKT_FALLBACK_GENRES.map(g => g.name)];
+    
+    // Cache the fallback data
+    const fallbackSlugs = Object.fromEntries(TRAKT_FALLBACK_GENRES.map(g => [g.name, g.slug]));
+    traktGenreCache = {
+      movies: fallbackGenreNames,
+      shows: fallbackGenreNames,
+      combined: fallbackGenreNames,
+      movieSlugs: fallbackSlugs,
+      showSlugs: fallbackSlugs,
+      lastFetched: Date.now()
+    };
+    
+    return fallbackGenreNames;
   }
 }
 
@@ -658,7 +723,20 @@ function getTraktGenreSlug(genreName, contentType = 'movies') {
   if (!genreName || genreName === 'All') return null;
   
   const slugKey = contentType === 'shows' ? 'showSlugs' : 'movieSlugs';
-  return traktGenreCache[slugKey]?.[genreName] || genreName.toLowerCase().replace(/\s+/g, '-');
+  
+  // First try to get from cache
+  if (traktGenreCache[slugKey]?.[genreName]) {
+    return traktGenreCache[slugKey][genreName];
+  }
+  
+  // Fallback to hardcoded genres if not in cache
+  const fallbackGenre = TRAKT_FALLBACK_GENRES.find(g => g.name === genreName);
+  if (fallbackGenre) {
+    return fallbackGenre.slug;
+  }
+  
+  // Final fallback - convert name to slug format
+  return genreName.toLowerCase().replace(/\s+/g, '-');
 }
 
 /**
