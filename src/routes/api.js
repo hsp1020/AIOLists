@@ -419,7 +419,7 @@ module.exports = function(router) {
               query: searchQuery.trim(),
               type: 'search', // Use search type for merged search
               sources: ['multi'], // Use multi source for merged search
-              limit: 100,
+              limit: 50,
               userConfig: req.userConfig
             });
           } else if (catalogId === 'aiolists_anime_search') {
@@ -430,7 +430,7 @@ module.exports = function(router) {
               query: searchQuery.trim(),
               type: 'anime', // Use anime type for anime search
               sources: ['anime'], // Use anime source for anime search
-              limit: 100,
+              limit: 50,
               userConfig: req.userConfig
             });
           } else {
@@ -465,7 +465,7 @@ module.exports = function(router) {
               query: searchQuery.trim(),
               type: searchType,
               sources: sources,
-              limit: 100,
+              limit: 50,
               userConfig: req.userConfig
             });
           }
