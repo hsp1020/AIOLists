@@ -79,7 +79,7 @@ async function batchFetchPosters(imdbIds, rpdbApiKey, language = null) {
   }
   
   // Process in batches to respect API limits
-  const batchSize = POSTER_BATCH_SIZE || 100;
+  const batchSize = POSTER_BATCH_SIZE || 50;
   const batches = [];
   for (let i = 0; i < uncachedIds.length; i += batchSize) {
     batches.push(uncachedIds.slice(i, i + batchSize));
