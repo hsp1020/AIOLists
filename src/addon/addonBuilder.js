@@ -1026,7 +1026,7 @@ async function createAddon(userConfig) {
             query: searchQuery.trim(),
             type: 'search', // Use search type for merged search
             sources: ['multi'], // Use multi source for merged search
-            limit: 100,
+            limit: 50,
             userConfig: userConfig
           });
         } else if (id === 'aiolists_anime_search') {
@@ -1036,7 +1036,7 @@ async function createAddon(userConfig) {
             query: searchQuery.trim(),
             type: 'anime', // Use anime type for anime search
             sources: ['anime'], // Use anime source for anime search
-            limit: 100,
+            limit: 50,
             userConfig: userConfig
           });
         } else {
@@ -1069,7 +1069,7 @@ async function createAddon(userConfig) {
             query: searchQuery.trim(),
             type: searchType,
             sources: sources,
-            limit: 100,
+            limit: 50,
             userConfig: userConfig
           });
         }
