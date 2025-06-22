@@ -10,7 +10,7 @@ const {
 } = require('../integrations/tmdb');
 
 const CINEMETA_BASE = 'https://v3-cinemeta.strem.io';
-const BATCH_SIZE = METADATA_BATCH_SIZE || 200;
+const BATCH_SIZE = METADATA_BATCH_SIZE || 100;
 
 // Helper function to normalize IMDB IDs
 function normalizeImdbId(id) {
