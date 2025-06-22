@@ -18,7 +18,7 @@ const externalIdCache = new Map();
  * @param {Object} params.userConfig - User configuration
  * @returns {Promise<Object>} Search results
  */
-async function searchContent({ query, type = 'all', sources = ['cinemeta'], limit = 200, userConfig = {} }) {
+async function searchContent({ query, type = 'all', sources = ['cinemeta'], limit = 100, userConfig = {} }) {
   if (!query || query.trim().length < 2) {
     return { results: [], totalResults: 0, sources: [] };
   }
