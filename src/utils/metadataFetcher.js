@@ -228,7 +228,7 @@ async function enrichItemsWithTMDB(items, language = 'en-US', userBearerToken = 
     const itemsWithGenres = enrichedItems.filter(item => item.genres && item.genres.length > 0);
     
     // If less than 50% of items were enriched, fall back to Cinemeta for better genre coverage
-    if (enrichedCount < items.length * 0.5) {
+    if (enrichedCount < items.length * 0) {
       console.log('[TMDB] Low enrichment success rate, falling back to Cinemeta for better coverage');
       return await enrichItemsWithCinemeta(items);
     }
